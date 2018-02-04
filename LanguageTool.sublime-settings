@@ -1,6 +1,7 @@
 {
     "languagetool_server_remote": "https://languagetool.org/api/v2/check",
     "languagetool_server_local": "http://localhost:8081/v2/check",
+    "languagetool_port": "8081",
 
     // The adapter supports local and remote LanguageTool servers. Remote checking is
     // the default and works by submitting text over https to an api endpoint on
