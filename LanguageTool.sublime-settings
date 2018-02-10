@@ -32,7 +32,7 @@
     // desirable to use a particular server with certain pieces of text.
     "default_server": "local",
     "display_mode": "panel",
-    "languagetool_jar": "C:\\bin\\LanguageTool-3.5\\languagetool-commandline.jar",
+    "languagetool_jar": "C:\\bin\\LanguageTool-3.5\\languagetool-server.jar",
     "highlight-scope": "comment",
     "ignored-scopes": [
         "support.function.*.latex",
