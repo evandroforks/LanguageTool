@@ -1,7 +1,9 @@
-# LanguageTool.py
-#
-# This is a simple Sublime Text plugin for checking grammar. It passes buffer
-# content to LanguageTool (via http) and highlights reported problems.
+"""
+LanguageTool.py
+
+This is a simple Sublime Text plugin for checking grammar. It passes buffer
+content to LanguageTool (via http) and highlights reported problems.
+"""
 
 import sublime
 import sublime_plugin
@@ -22,14 +24,15 @@ else:
     from . import LanguageList
 
 
-# select characters with indices [i, j]
 def move_caret(view, i, j):
+    """Select character range [i, j] in view."""
     target = view.text_point(0, i)
     view.sel().clear()
     view.sel().add(sublime.Region(target, target + j - i))
 
 
 def set_status_bar(str):
+    """Change status bar message."""
     sublime.status_message(str)
 
 
@@ -104,12 +107,12 @@ class setLanguageToolPanelTextCommand(sublime_plugin.TextCommand):
 
 # navigation function
 class gotoNextLanguageProblemCommand(sublime_plugin.TextCommand):
-    def run(self, edit, jumpForward=True):
+    def run(self, edit, jump_forward=True):
         v = self.view
         problems = v.__dict__.get("problems", [])
         if len(problems) > 0:
             sel = v.sel()[0]
-            if jumpForward:
+            if jump_forward:
                 for p in problems:
                     r = v.get_regions(p['regionKey'])[0]
                     if (not is_problem_solved(v, p)) and (sel.begin() < r.a):
@@ -144,7 +147,7 @@ class clearLanguageProblemsCommand(sublime_plugin.TextCommand):
 
 
 class markLanguageProblemSolvedCommand(sublime_plugin.TextCommand):
-    def run(self, edit, applyFix):
+    def run(self, edit, apply_fix):
         v = self.view
         problems = v.__dict__.get("problems", [])
         sel = v.sel()[0]
@@ -153,7 +156,7 @@ class markLanguageProblemSolvedCommand(sublime_plugin.TextCommand):
             replacements = p['replacements']
             nextCaretPos = r.a
             if r == sel:
-                if applyFix and replacements:
+                if apply_fix and replacements:
                     # fix selected problem:
                     if len(replacements) > 1:
                         callbackF = lambda i: self.handle_suggestion_selection(v, p, replacements, i)
@@ -178,7 +181,7 @@ class markLanguageProblemSolvedCommand(sublime_plugin.TextCommand):
                         ignore_problem(p2, v, self, edit)
                 # after either fixing or ignoring:
                 move_caret(v, nextCaretPos,
-                          nextCaretPos)  # move caret to end of region
+                           nextCaretPos)  # move caret to end of region
                 v.run_command("goto_next_language_problem")
                 return
         # if no problems are selected:
@@ -194,6 +197,7 @@ class markLanguageProblemSolvedCommand(sublime_plugin.TextCommand):
             v.run_command("goto_next_language_problem")
         else:
             select_problem(v, p)
+
 
 def get_settings():
     return sublime.load_settings('LanguageTool.sublime-settings')
