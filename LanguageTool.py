@@ -1,7 +1,9 @@
-# LanguageTool.py
-#
-# This is a simple Sublime Text plugin for checking grammar. It passes buffer
-# content to LanguageTool (via http) and highlights reported problems.
+"""
+LanguageTool.py
+
+This is a simple Sublime Text plugin for checking grammar. It passes buffer
+content to LanguageTool (via http) and highlights reported problems.
+"""
 
 import sublime
 import sublime_plugin
@@ -22,14 +24,15 @@ else:
     from . import LanguageList
 
 
-# select characters with indices [i, j]
 def move_caret(view, i, j):
+    """Select character range [i, j] in view."""
     target = view.text_point(0, i)
     view.sel().clear()
     view.sel().add(sublime.Region(target, target + j - i))
 
 
 def set_status_bar(str):
+    """Change status bar message."""
     sublime.status_message(str)
 
 
@@ -104,12 +107,12 @@ class setLanguageToolPanelTextCommand(sublime_plugin.TextCommand):
 
 # navigation function
 class gotoNextLanguageProblemCommand(sublime_plugin.TextCommand):
-    def run(self, edit, jumpForward=True):
+    def run(self, edit, jump_forward=True):
         v = self.view
         problems = v.__dict__.get("problems", [])
         if len(problems) > 0:
             sel = v.sel()[0]
-            if jumpForward:
+            if jump_forward:
                 for p in problems:
                     r = v.get_regions(p['regionKey'])[0]
                     if (not is_problem_solved(v, p)) and (sel.begin() < r.a):
@@ -144,7 +147,7 @@ class clearLanguageProblemsCommand(sublime_plugin.TextCommand):
 
 
 class markLanguageProblemSolvedCommand(sublime_plugin.TextCommand):
-    def run(self, edit, applyFix):
+    def run(self, edit, apply_fix):
         v = self.view
         problems = v.__dict__.get("problems", [])
         sel = v.sel()[0]
@@ -153,7 +156,7 @@ class markLanguageProblemSolvedCommand(sublime_plugin.TextCommand):
             replacements = p['replacements']
             nextCaretPos = r.a
             if r == sel:
-                if applyFix and replacements:
+                if apply_fix and replacements:
                     # fix selected problem:
                     if len(replacements) > 1:
                         callbackF = lambda i: self.handle_suggestion_selection(v, p, replacements, i)
@@ -178,7 +181,7 @@ class markLanguageProblemSolvedCommand(sublime_plugin.TextCommand):
                         ignore_problem(p2, v, self, edit)
                 # after either fixing or ignoring:
                 move_caret(v, nextCaretPos,
-                          nextCaretPos)  # move caret to end of region
+                           nextCaretPos)  # move caret to end of region
                 v.run_command("goto_next_language_problem")
                 return
         # if no problems are selected:
@@ -195,15 +198,18 @@ class markLanguageProblemSolvedCommand(sublime_plugin.TextCommand):
         else:
             select_problem(v, p)
 
+
 def get_settings():
     return sublime.load_settings('LanguageTool.sublime-settings')
 
 
 class startLanguageToolServerCommand(sublime_plugin.TextCommand):
-    # sublime.active_window().active_view().run_command('start_language_tool_server')
+    """Launch local LanguageTool Server."""
+
     def run(self, edit):
         jarPath = get_settings().get('languagetool_jar')
         portNumber = get_settings().get('languagetool_port')
+
         if jarPath:
             if os.path.isfile(jarPath):
                 sublime.status_message(
@@ -274,7 +280,7 @@ def save_ignored_rules(ignored):
     sublime.save_settings(ignored_rules_file)
 
 
-def getServer(settings, forceServer):
+def getServer(settings, force_server):
     # returns server url based on the setting `default_server`
     #
     # If `default_server` is `local` then return the server defined in
@@ -286,9 +292,9 @@ def getServer(settings, forceServer):
     # if `default_server` is anything else then treat as `remote`
     #
     settings = get_settings()
-    if forceServer is None:
-        forceServer = settings.get('default_server', 'remote')
-    if forceServer == "local":
+    if force_server is None:
+        force_server = settings.get('default_server', 'remote')
+    if force_server == "local":
         server = settings.get('languagetool_server_local',
                               'http://localhost:8081/v2/check')
     else:
@@ -298,12 +304,12 @@ def getServer(settings, forceServer):
 
 
 class LanguageToolCommand(sublime_plugin.TextCommand):
-    def run(self, edit, forceServer=None):
+    def run(self, edit, force_server=None):
         v = self.view
         problems = list()
         v.problems = problems
         settings = get_settings()
-        server = getServer(settings, forceServer)
+        server = getServer(settings, force_server)
         hscope = settings.get("highlight-scope", "comment")
         ignored = load_ignored_rules()
         strText = v.substr(sublime.Region(0, v.size()))
