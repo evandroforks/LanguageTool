@@ -10,6 +10,7 @@ import sublime_plugin
 import subprocess
 import os.path
 import fnmatch
+import itertools
 
 
 def _is_ST2():
@@ -31,28 +32,30 @@ def move_caret(view, i, j):
     view.sel().add(sublime.Region(target, target + j - i))
 
 
-def set_status_bar(str):
+def set_status_bar(message):
     """Change status bar message."""
-    sublime.status_message(str)
+    sublime.status_message(message)
 
 
-def select_problem(view, prob):
-    reg = view.get_regions(prob['regionKey'])[0]
+def select_problem(view, problem):
+    reg = view.get_regions(problem['regionKey'])[0]
     move_caret(view, reg.a, reg.b)
     view.show_at_center(reg)
-    show_problem(prob)
+    show_problem(problem)
 
 
-def is_problem_solved(v, p):
-    rl = v.get_regions(p['regionKey'])
-    if len(rl) == 0:
-        print('tried to find non-existing region with key ' + p['regionKey'])
-        return True
-    r = rl[0]
-    # a problem is solved when either:
-    # 1. its region has zero length
-    # 2. its contents have been changed
-    return r.empty() or (v.substr(r) != p['orgContent'])
+def is_problem_solved(view, problem):
+    """Return True iff a language problem has been resolved.
+
+    A problem is considered resolved if either:
+
+    1. its region has zero length, or
+    2. its contents have been changed.
+    """
+    rl = view.get_regions(problem['regionKey'])
+    assert len(rl) > 0, 'tried to find non-existing region'
+    region = rl[0]
+    return region.empty() or (view.substr(region) != problem['orgContent'])
 
 
 def show_problem(p):
@@ -80,18 +83,16 @@ def show_problem(p):
     show_fun(p)
 
 
-def show_panel_text(str):
+def show_panel_text(text):
+    window = sublime.active_window()
     if _is_ST2():
-        window = sublime.active_window()
         pt = window.get_output_panel("languagetool")
         pt.set_read_only(False)
         edit = pt.begin_edit()
-        pt.insert(edit, pt.size(), str)
+        pt.insert(edit, pt.size(), text)
         window.run_command("show_panel", {"panel": "output.languagetool"})
     else:
-        sublime.active_window().run_command('set_language_tool_panel_text', {
-            'str': str
-        })
+        window.run_command('set_language_tool_panel_text', {'str': text})
 
 
 class setLanguageToolPanelTextCommand(sublime_plugin.TextCommand):
@@ -105,7 +106,6 @@ class setLanguageToolPanelTextCommand(sublime_plugin.TextCommand):
         window.run_command("show_panel", {"panel": "output.languagetool"})
 
 
-# navigation function
 class gotoNextLanguageProblemCommand(sublime_plugin.TextCommand):
     def run(self, edit, jump_forward=True):
         v = self.view
@@ -148,55 +148,68 @@ class clearLanguageProblemsCommand(sublime_plugin.TextCommand):
 
 class markLanguageProblemSolvedCommand(sublime_plugin.TextCommand):
     def run(self, edit, apply_fix):
-        v = self.view
-        problems = v.__dict__.get("problems", [])
-        sel = v.sel()[0]
-        for p in problems:
-            r = v.get_regions(p['regionKey'])[0]
-            replacements = p['replacements']
-            nextCaretPos = r.a
-            if r == sel:
-                if apply_fix and replacements:
-                    # fix selected problem:
-                    if len(replacements) > 1:
-                        callbackF = lambda i: self.handle_suggestion_selection(v, p, replacements, i)
-                        v.window().show_quick_panel(replacements, callbackF)
-                        return
-                    else:
-                        v.replace(edit, r, replacements[0])
-                        nextCaretPos = r.a + len(replacements[0])
-                else:
-                    # ignore problem:
-                    if p['category'] == "Possible Typo":
-                        # if this is a typo then include all identical typos in the
-                        # list of problems to be fixed
-                        pID = lambda py: (py['category'], py['orgContent'])
-                        ignoreProbs = [
-                            px for px in problems if pID(p) == pID(px)
-                        ]
-                    else:
-                        # otherwise select just this one problem
-                        ignoreProbs = [p]
-                    for p2 in ignoreProbs:
-                        ignore_problem(p2, v, self, edit)
-                # after either fixing or ignoring:
-                move_caret(v, nextCaretPos,
-                           nextCaretPos)  # move caret to end of region
-                v.run_command("goto_next_language_problem")
-                return
-        # if no problems are selected:
-        set_status_bar('no language problem selected')
 
-    def handle_suggestion_selection(self, v, p, replacements, choice):
+        v = self.view
+
         problems = v.__dict__.get("problems", [])
-        if choice != -1:
-            r = v.get_regions(p['regionKey'])[0]
-            v.run_command('insert', {'characters': replacements[choice]})
-            c = r.a + len(replacements[choice])
-            move_caret(v, c, c)  # move caret to end of region
-            v.run_command("goto_next_language_problem")
+        selected_region = v.sel()[0]
+
+        # Find problem corresponding to selection
+        for problem in problems:
+            problem_region = v.get_regions(problem['regionKey'])[0]
+            if problem_region == selected_region:
+                break
         else:
-            select_problem(v, p)
+            set_status_bar('no language problem selected')
+            return
+
+        next_caret_pos = problem_region.a
+        replacements = problem['replacements']
+
+        if apply_fix and replacements:
+            # fix selected problem:
+            correct_problem(self.view, edit, problem, replacements)
+
+        else:
+            # ignore problem:
+            equal_problems = get_equal_problems(problems, problem)
+            for p2 in equal_problems:
+                ignore_problem(p2, v, edit)
+            # After ignoring problem:
+            move_caret(v, next_caret_pos, next_caret_pos)  # advance caret
+            v.run_command("goto_next_language_problem")
+
+def choose_suggestion(view, p, replacements, choice):
+    """Handle suggestion list selection."""
+    problems = view.__dict__.get("problems", [])
+    if choice != -1:
+        r = view.get_regions(p['regionKey'])[0]
+        view.run_command('insert', {'characters': replacements[choice]})
+        c = r.a + len(replacements[choice])
+        move_caret(view, c, c)  # move caret to end of region
+        view.run_command("goto_next_language_problem")
+    else:
+        select_problem(view, p)
+
+
+def get_equal_problems(problems, x):
+    """Find problems with same category and content as a given problem.
+
+    Args:
+      problems (list): list of problems to compare.
+      x (dict): problem object to compare with.
+
+    Returns:
+      list: list of problems equal to x.
+
+    """
+
+    def is_equal(prob1, prob2):
+        same_category = prob1['category'] == prob2['category']
+        same_content = prob1['orgContent'] == prob2['orgContent']
+        return same_category and same_content
+
+    return [problem for problem in problems if is_equal(problem, x)]
 
 
 def get_settings():
@@ -207,32 +220,37 @@ class startLanguageToolServerCommand(sublime_plugin.TextCommand):
     """Launch local LanguageTool Server."""
 
     def run(self, edit):
-        jarPath = get_settings().get('languagetool_jar')
-        portNumber = get_settings().get('languagetool_port')
+        jar_path = get_settings().get('languagetool_jar')
+        port_number = get_settings().get('languagetool_port')
 
-        if jarPath:
-            if os.path.isfile(jarPath):
-                sublime.status_message(
-                    'Starting local LanguageTool server ...')
-                cmd = ['java', '-cp', jarPath, 'org.languagetool.server.HTTPServer', '--port', portNumber]
+        if jar_path:
+
+            if os.path.isfile(jar_path):
+                sublime.status_message('Starting local LanguageTool server ...')
+                cmd = ['java', '-cp', jar_path, 'org.languagetool.server.HTTPServer', '--port', port_number]
+
                 if sublime.platform() == "windows":
-                    p = subprocess.Popen(
+                    process = subprocess.Popen(
                         cmd,
                         stdin=subprocess.PIPE,
                         stdout=subprocess.PIPE,
                         stderr=subprocess.PIPE,
                         shell=True,
                         creationflags=subprocess.SW_HIDE)
+
                 else:
-                    p = subprocess.Popen(
+                    process = subprocess.Popen(
                         cmd,
                         stdin=subprocess.PIPE,
                         stdout=subprocess.PIPE,
                         stderr=subprocess.PIPE)
+
             else:
                 show_panel_text(
-                    'Error, could not find LanguageTool\'s JAR file (%s)\n\nPlease install LT in this directory or modify the `languagetool_jar` setting.'
-                    % jarPath)
+                    'Error, could not find LanguageTool\'s JAR file (%s)'
+                    '\n\n'
+                    'Please install LT in this directory'
+                    ' or modify the `languagetool_jar` setting.' % jar_path)
 
 
 class changeLanguageToolLanguageCommand(sublime_plugin.TextCommand):
@@ -252,19 +270,36 @@ def handle_language_selection(ind, view):
         view.settings().set(key, selected_language)
 
 
-def get_language(view):
-    key = 'language_tool_language'
-    return view.settings().get(key, 'auto')
+def correct_problem(view, edit, problem, replacements):
+
+    def clear_and_advance():
+        clear_region(view, problem['regionKey'])
+        move_caret(view, next_caret_pos, next_caret_pos)  # advance caret
+        view.run_command("goto_next_language_problem")
+
+    if len(replacements) > 1:
+        def callback_fun(i):
+            choose_suggestion(view, problem, replacements, i)
+            clear_and_advance()
+        view.window().show_quick_panel(replacements, callback_fun)
+
+    else:
+        region = view.get_regions(problem['regionKey'])[0]
+        view.replace(edit, region, replacements[0])
+        next_caret_pos = region.a + len(replacements[0])
+        clear_and_advance()
 
 
-def ignore_problem(p, v, self, edit):
-    # change region associated with this problem to a 0-length region
-    r = v.get_regions(p['regionKey'])[0]
+def clear_region(view, region_key):
+    r = view.get_regions(region_key)[0]
     dummyRg = sublime.Region(r.a, r.a)
     hscope = get_settings().get("highlight-scope", "comment")
-    v.add_regions(p['regionKey'], [dummyRg], hscope, "", sublime.DRAW_OUTLINED)
-    # dummy edit to enable undoing ignore
-    v.insert(edit, v.size(), "")
+    view.add_regions(region_key, [dummyRg], hscope, "", sublime.DRAW_OUTLINED)
+
+
+def ignore_problem(p, v, edit):
+    clear_region(v, p['regionKey'])
+    v.insert(edit, v.size(), "")  # dummy edit to enable undoing ignore
 
 
 def load_ignored_rules():
@@ -280,84 +315,145 @@ def save_ignored_rules(ignored):
     sublime.save_settings(ignored_rules_file)
 
 
-def getServer(settings, force_server):
-    # returns server url based on the setting `default_server`
-    #
-    # If `default_server` is `local` then return the server defined in
-    # `language_server_local` (defaults to 'http://localhost:8081/v2/check').
-    #
-    # If `default_server` is `remote` then return the server defined in
-    # `language_server_remote` (defaults to 'https://languagetool.org/api/v2/check').
-    #
-    # if `default_server` is anything else then treat as `remote`
-    #
-    settings = get_settings()
-    if force_server is None:
-        force_server = settings.get('default_server', 'remote')
-    if force_server == "local":
-        server = settings.get('languagetool_server_local',
-                              'http://localhost:8081/v2/check')
-    else:
-        server = settings.get('languagetool_server_remote',
-                              'https://languagetool.org/api/v2/check')
+def get_server_url(settings, force_server):
+    """Return LT server url based on settings.
+
+    The returned url is for either the local or remote servers, defined by the
+    settings entries:
+
+        - language_server_local
+        - language_server_remote
+
+    The choice between the above is made based on the settings value
+    'default_server'. If not None, `force_server` will override this setting.
+
+    """
+    server_setting = force_server or settings.get('default_server')
+    setting_name = 'languagetool_server_%s' % server_setting
+    server = settings.get(setting_name)
     return server
 
 
 class LanguageToolCommand(sublime_plugin.TextCommand):
     def run(self, edit, force_server=None):
-        v = self.view
-        problems = list()
-        v.problems = problems
+
         settings = get_settings()
-        server = getServer(settings, force_server)
-        hscope = settings.get("highlight-scope", "comment")
-        ignored = load_ignored_rules()
-        strText = v.substr(sublime.Region(0, v.size()))
-        checkRegion = v.sel()[0]
-        if checkRegion.empty():
-            checkRegion = sublime.Region(0, v.size())
-        v.run_command("clear_language_problems")
-        lang = get_language(v)
-        ignoredIDs = [rule['id'] for rule in ignored]
-        matches = LTServer.getResponse(server, strText, lang, ignoredIDs)
+        server_url = get_server_url(settings, force_server)
+        ignored_scopes = settings.get('ignored-scopes')
+        highlight_scope = settings.get('highlight-scope')
+
+        selection = self.view.sel()[0]  # first selection (ignore rest)
+        everything = sublime.Region(0, self.view.size())
+        check_region = everything if selection.empty() else selection
+        check_text = self.view.substr(check_region)
+
+        self.view.run_command("clear_language_problems")
+
+        language = self.view.settings().get('language_tool_language', 'auto')
+        ignored_ids = [rule['id'] for rule in load_ignored_rules()]
+
+        matches = LTServer.getResponse(server_url, check_text, language,
+                                       ignored_ids)
+
         if matches == None:
-            set_status_bar(
-                'could not parse server response (may be due to quota if using http://languagetool.org)'
-            )
+            set_status_bar('could not parse server response (may be due to'
+                           ' quota if using https://languagetool.org)')
             return
-        for match in matches:
-            problem = {
-                'category': match['rule']['category']['name'],
-                'message': match['message'],
-                'replacements': [r['value'] for r in match['replacements']],
-                'rule': match['rule']['id'],
-                'urls': [w['value'] for w in match['rule'].get('urls', [])],
-            }
-            offset = match['offset']
-            length = match['length']
-            region = sublime.Region(offset, offset + length)
-            if not checkRegion.contains(region):
-                continue
-            ignored_scopes = settings.get('ignored-scopes', [])
-            # view.scope_name() returns a string of space-separated scope names
-            # (ending with a space)
-            pscopes = v.scope_name(region.a).split(' ')[0:-1]
-            for ps in pscopes:
-                if any([fnmatch.fnmatch(ps, i) for i in ignored_scopes]):
-                    ignored = True
-                    break
-            else:
-                # none of this region's scopes are ignored
-                regionKey = str(len(problems))
-                v.add_regions(regionKey, [region], hscope, "",
-                              sublime.DRAW_OUTLINED)
-                problem['orgContent'] = v.substr(region)
-                problem['regionKey'] = regionKey
-                problems.append(problem)
+
+        def get_region(problem):
+            """Return a Region object corresponding to problem text."""
+            length = problem['length']
+            offset = problem['offset']
+            return sublime.Region(offset, offset + length)
+
+        def inside(problem):
+            """Return True iff problem text is inside check_region."""
+            region = get_region(problem)
+            return check_region.contains(region)
+
+        def is_ignored(problem):
+            """Return True iff any problem scope is ignored."""
+            scope_string = self.view.scope_name(problem['offset'])
+            scopes = scope_string.split()
+            return cross_match(scopes, ignored_scopes, fnmatch.fnmatch)
+
+        def add_highlight_region(region_key, problem):
+            region = get_region(problem)
+            problem['orgContent'] = self.view.substr(region)
+            problem['regionKey'] = region_key
+            self.view.add_regions(region_key, [region], highlight_scope, "",
+                                  sublime.DRAW_OUTLINED)
+
+
+        shifter = lambda problem: shift_offset(problem, check_region.a)
+
+        get_problem = compose(shifter, parse_match)
+
+        problems = [problem for problem in map(get_problem, matches)
+                    if inside(problem) and not is_ignored(problem)]
+
+        for index, problem in enumerate(problems):
+            add_highlight_region(str(index), problem)
+
         if problems:
-            select_problem(v, problems[0])
+            select_problem(self.view, problems[0])
         else:
             set_status_bar("no language problems were found :-)")
+
+        self.view.problems = problems
+
+
+def compose(f1, f2):
+    """Compose two functions."""
+    def inner(*args, **kwargs):
+        return f1(f2(*args, **kwargs))
+    return inner
+
+
+def cross_match(list1, list2, predicate):
+    """Cross match items from two lists using a predicate.
+
+    Args:
+      list1 (list): list 1.
+      list2 (list): list 2.
+
+    Returns:
+      True iff predicate(x, y) is True for any x in list1 and y in list2,
+      False otherwise.
+
+    """
+    return any(predicate(x, y) for x, y in itertools.product(list1, list2))
+
+
+def shift_offset(problem, shift):
+    """Shift problem offset by `shift`."""
+
+    problem['offset'] += shift
+    return problem
+
+
+def parse_match(match):
+    """Parse a match object.
+
+    Args:
+      match (dict): match object returned by LanguageTool Server.
+
+    Returns:
+      dict: problem object.
+
+    """
+
+    problem = {
+        'category': match['rule']['category']['name'],
+        'message': match['message'],
+        'replacements': [r['value'] for r in match['replacements']],
+        'rule': match['rule']['id'],
+        'urls': [w['value'] for w in match['rule'].get('urls', [])],
+        'offset': match['offset'],
+        'length': match['length']
+    }
+
+    return problem
 
 
 class DeactivateRuleCommand(sublime_plugin.TextCommand):
@@ -386,9 +482,8 @@ class DeactivateRuleCommand(sublime_plugin.TextCommand):
             save_ignored_rules(ignored)
             set_status_bar('deactivated rule %s' % rule)
         else:
-            set_status_bar(
-                'there are multiple selected problems; select only one to deactivate'
-            )
+            set_status_bar('there are multiple selected problems;'
+                           ' select only one to deactivate')
 
 
 class ActivateRuleCommand(sublime_plugin.TextCommand):
